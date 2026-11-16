@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Downloader</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0f1115">
+<link rel="icon" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e8eaed; --muted:#8b93a1; --accent:#ff3d3d; --ok:#2ecc71; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; padding:16px; }
+  .card { width:100%; max-width:520px; background:var(--card); border-radius:14px; padding:24px; }
+  h1 { margin:0 0 18px; font-size:20px; }
+  .row { display:flex; gap:8px; margin-bottom:14px; }
+  input[type=text] { flex:1; min-width:0; padding:11px 12px; border-radius:8px; border:1px solid #2c313b;
+         background:#12141a; color:var(--fg); font-size:15px; }
+  button { padding:11px 16px; border:0; border-radius:8px; background:#2c313b; color:var(--fg);
+           font-size:15px; cursor:pointer; }
+  button:hover { filter:brightness(1.2); }
+  button.primary { background:var(--accent); width:100%; font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  .formats { display:flex; gap:20px; margin-bottom:16px; }
+  .formats label { cursor:pointer; }
+  .bar { height:8px; background:#12141a; border-radius:4px; overflow:hidden; margin-top:16px; display:none; }
+  .bar div { height:100%; width:0; background:var(--accent); transition:width .3s; }
+  #msg { margin-top:12px; color:var(--muted); font-size:14px; min-height:20px; word-break:break-word; }
+  #msg.err { color:#ff6b6b; }
+  #result { display:none; margin-top:16px; padding-top:16px; border-top:1px solid #2c313b; }
+  #fname { word-break:break-all; margin-bottom:12px; color:var(--ok); }
+  #result .row { margin:0; }
+  #result button { flex:1; }
+  #renameBox { display:none; margin-top:10px; }
+  .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
+  .head h1 { margin:0; }
+  .head button { padding:8px 14px; font-size:14px; }
+  #history { display:none; margin-top:20px; padding-top:16px; border-top:1px solid #2c313b; }
+  .hhead { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .hhead b { font-size:16px; }
+  .hhead button, .item button { padding:7px 12px; font-size:13px; }
+  .danger { background:#5a2326; }
+  .item { display:flex; align-items:center; gap:8px; padding:10px 0; border-bottom:1px solid #2c313b; }
+  .item .info { flex:1; min-width:0; }
+  .item .name { word-break:break-word; font-size:14px; }
+  .item .meta { color:var(--muted); font-size:12px; margin-top:2px; }
+  #empty { color:var(--muted); font-size:14px; padding:8px 0; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head">
+    <h1>YouTube Downloader</h1>
+    <button id="histBtn">История</button>
+  </div>
+  <div class="row">
+    <input type="text" id="url" placeholder="Вставьте ссылку на YouTube">
+    <button id="paste">Вставить</button>
+  </div>
+  <div class="formats">
+    <label><input type="radio" name="fmt" value="mp3" checked> MP3</label>
+    <label><input type="radio" name="fmt" value="video"> Видео</label>
+  </div>
+  <button class="primary" id="go">Скачать</button>
+  <div class="bar" id="bar"><div></div></div>
+  <div id="msg"></div>
+
+  <div id="result">
+    <div id="fname"></div>
+    <div class="row">
+      <button id="renameBtn">Переименовать</button>
+      <button id="saveBtn" class="primary">Скачать файл</button>
+    </div>
+    <div class="row" id="renameBox">
+      <input type="text" id="newName">
+      <button id="renameOk">OK</button>
+    </div>
+  </div>
+
+  <div id="history">
+    <div class="hhead">
+      <b>История</b>
+      <button id="clearAll" class="danger">Удалить всё</button>
+    </div>
+    <div id="list"></div>
+  </div>
+</div>
+<script>
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
+</script>
+<script>
+const $ = id => document.getElementById(id);
+let jobId = null, timer = null;
+
+function msg(t, err) { $('msg').textContent = t; $('msg').className = err ? 'err' : ''; }
+
+$('paste').onclick = async () => {
+  try { $('url').value = (await navigator.clipboard.readText()).trim(); }
+  catch { msg('Нет доступа к буферу — вставьте вручную (Ctrl+V)', true); }
+};
+
+$('go').onclick = async () => {
+  const url = $('url').value.trim();
+  if (!url) return msg('Вставьте ссылку', true);
+  clearInterval(timer);
+  $('result').style.display = 'none';
+  $('renameBox').style.display = 'none';
+  $('go').disabled = true;
+  $('bar').style.display = 'block';
+  $('bar').firstElementChild.style.width = '0';
+  msg('Скачивание...');
+  const r = await fetch('/api/download', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({url, format: document.querySelector('input[name=fmt]:checked').value})});
+  const d = await r.json();
+  if (!r.ok) { $('go').disabled = false; return msg(d.error, true); }
+  jobId = d.id;
+  timer = setInterval(poll, 1000);
+};
+
+async function poll() {
+  const s = await (await fetch('/api/status/' + jobId)).json();
+  $('bar').firstElementChild.style.width = (s.progress || 0) + '%';
+  if (s.status === 'downloading') msg('Скачивание... ' + (s.progress || 0) + '%');
+  else if (s.status === 'processing') msg('Обработка...');
+  else if (s.status === 'error') { clearInterval(timer); $('go').disabled = false; msg(s.error, true); }
+  else if (s.status === 'done') {
+    clearInterval(timer); $('go').disabled = false;
+    msg('Готово!');
+    $('fname').textContent = s.filename;
+    $('result').style.display = 'block';
+  }
+}
+
+$('renameBtn').onclick = () => {
+  const n = $('fname').textContent;
+  $('newName').value = n.replace(/\.[^.]+$/, '');
+  $('renameBox').style.display = 'flex';
+  $('newName').focus();
+};
+
+$('renameOk').onclick = async () => {
+  const r = await fetch('/api/rename/' + jobId, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name: $('newName').value})});
+  const d = await r.json();
+  if (!r.ok) return msg(d.error, true);
+  $('fname').textContent = d.filename;
+  $('renameBox').style.display = 'none';
+  msg('Переименовано');
+};
+$('newName').onkeydown = e => { if (e.key === 'Enter') $('renameOk').click(); };
+
+$('saveBtn').onclick = () => { location.href = '/api/file/' + jobId; };
+
+function fmtSize(b) {
+  return b > 1e9 ? (b / 1e9).toFixed(1) + ' ГБ' : (b / 1e6).toFixed(1) + ' МБ';
+}
+
+async function loadHistory() {
+  const items = await (await fetch('/api/history')).json();
+  const list = $('list');
+  list.textContent = '';
+  $('clearAll').style.display = items.length ? '' : 'none';
+  if (!items.length) {
+    const e = document.createElement('div');
+    e.id = 'empty';
+    e.textContent = 'Пока пусто';
+    list.append(e);
+    return;
+  }
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.className = 'item';
+    const info = document.createElement('div');
+    info.className = 'info';
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = it.filename;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = fmtSize(it.size) + ' · ' + new Date(it.time * 1000).toLocaleString('ru-RU');
+    info.append(name, meta);
+    const dl = document.createElement('button');
+    dl.textContent = '⬇';
+    dl.title = 'Скачать';
+    dl.onclick = () => { location.href = '/api/file/' + it.id; };
+    const del = document.createElement('button');
+    del.textContent = '🗑';
+    del.title = 'Удалить';
+    del.className = 'danger';
+    del.onclick = async () => {
+      if (!confirm('Удалить «' + it.filename + '»?')) return;
+      await fetch('/api/history/' + it.id, {method: 'DELETE'});
+      if (it.id === jobId) $('result').style.display = 'none';
+      loadHistory();
+    };
+    row.append(info, dl, del);
+    list.append(row);
+  }
+}
+
+$('histBtn').onclick = () => {
+  const h = $('history');
+  const show = h.style.display !== 'block';
+  h.style.display = show ? 'block' : 'none';
+  if (show) loadHistory();
+};
+
+$('clearAll').onclick = async () => {
+  if (!confirm('Удалить все скачанные файлы?')) return;
+  await fetch('/api/history', {method: 'DELETE'});
+  $('result').style.display = 'none';
+  loadHistory();
+};
+</script>
+</body>
+</html>
